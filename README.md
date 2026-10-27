@@ -156,6 +156,15 @@ call — no restart needed. Precedence is: dashboard selection, then
 ```powershell
 uv run python -m unittest discover -s tests -v
 ```
+## Usage 
+Add the below instruction into AGENTS.md or CLAUDE.md 
+
+```
+Use the agent-memory MCP tools for project knowledge:
+- Before a task, call query_memory with the task topic.
+- After a task, call ingest_memory with a summary and source="<repo>@<branch>".
+- End a session with consolidate_memories when memory_stats reports >= 2 unconsolidated.
+```
 
 ## Security and scope
 
