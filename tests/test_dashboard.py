@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -54,6 +55,22 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(read_dashboard_data(missing_path))
         self.assertFalse(missing_path.exists())
 
+    def test_normalises_string_entities_from_older_rows(self) -> None:
+        db = agent.get_db()
+        db.execute(
+            """INSERT INTO memories (source, raw_text, summary, entities, topics, importance, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("src.md", "Raw.", "Summary.", json.dumps("release, qa"), json.dumps("planning"), 0.5, "2026-01-01T00:00:00+00:00"),
+        )
+        db.commit()
+        db.close()
+
+        data = read_dashboard_data(self.db_path)
+
+        assert data is not None
+        self.assertEqual(data["memories"][0]["entities"], ["release", "qa"])
+        self.assertEqual(data["memories"][0]["topics"], ["planning"])
+
 
 class DashboardAppTests(unittest.TestCase):
     """Render the Streamlit script itself so widget calls are exercised."""
@@ -73,7 +90,15 @@ class DashboardAppTests(unittest.TestCase):
             importance=0.8,
             source="plan.md",
         )
-        self.env_patch = mock.patch.dict(os.environ, {"MEMORY_DB": str(self.db_path)})
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "MEMORY_DB": str(self.db_path),
+                "MEMORY_CONFIG": str(Path(self.temp_dir.name) / "memory-config.json"),
+                "LMSTUDIO_API_BASE": "http://127.0.0.1:9/v1",
+                "OLLAMA_API_BASE": "http://127.0.0.1:9",
+            },
+        )
         self.env_patch.start()
 
     def tearDown(self) -> None:
@@ -98,6 +123,24 @@ class DashboardAppTests(unittest.TestCase):
 
         self.assertEqual([str(error.value) for error in app.exception], [])
         self.assertEqual(app.subheader[0].value, "Recent memories (0 of 1 shown)")
+
+    def test_shows_provider_and_model_pickers_at_the_top(self) -> None:
+        app = self._run_app()
+
+        self.assertEqual([box.label for box in app.selectbox], ["API provider", "Model"])
+        self.assertEqual(app.selectbox[0].value, "lmstudio")
+        self.assertEqual(app.selectbox[1].value, "liquid/lfm2.5-1.2b")
+
+    def test_changing_the_provider_saves_the_selection(self) -> None:
+        app = self._run_app()
+
+        app.selectbox[0].set_value("ollama").run()
+
+        self.assertEqual([str(error.value) for error in app.exception], [])
+        saved = json.loads(Path(os.environ["MEMORY_CONFIG"]).read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"provider": "ollama", "model": "qwen2.5:1.6b"})
+        self.assertEqual(app.selectbox[0].value, "ollama")
+        self.assertEqual(app.selectbox[1].value, "qwen2.5:1.6b")
 
     def test_shows_startup_hint_while_the_database_is_missing(self) -> None:
         missing = Path(self.temp_dir.name) / "not-created" / "memory.db"

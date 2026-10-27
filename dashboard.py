@@ -16,6 +16,15 @@ from typing import Any
 import streamlit as st
 
 from asyncio_noise import quiet_windows_asyncio_resets
+from memory.config import (
+    PROVIDERS,
+    config_path,
+    default_model,
+    discover_models,
+    load_selection,
+    save_selection,
+)
+from memory.records import parse_json_list, parse_text_list
 
 quiet_windows_asyncio_resets()
 
@@ -64,8 +73,9 @@ def read_dashboard_data(db_path: Path = DB_PATH) -> dict[str, Any] | None:
     memories = []
     for row in memory_rows:
         memory = dict(row)
-        for field in ("entities", "topics", "connections"):
-            memory[field] = json.loads(memory[field])
+        memory["entities"] = parse_text_list(memory["entities"])
+        memory["topics"] = parse_text_list(memory["topics"])
+        memory["connections"] = parse_json_list(memory["connections"])
         memory["consolidated"] = bool(memory["consolidated"])
         memories.append(memory)
 
@@ -103,7 +113,55 @@ def render_memory(memory: dict[str, Any]) -> None:
         st.progress(max(0.0, min(float(memory["importance"]), 1.0)))
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def available_models(provider: str) -> list[str]:
+    return discover_models(provider)
+
+
+def save_selection_from_widgets(provider_key: str, model_key_prefix: str) -> None:
+    """Persist the pickers when the user changes one; widget resets never write."""
+    provider = st.session_state.get(provider_key)
+    if provider not in PROVIDERS:
+        return
+    model = st.session_state.get(f"{model_key_prefix}-{provider}") or default_model(provider)
+    save_selection(provider, model)
+
+
+def render_model_settings() -> None:
+    """Provider and model pickers; the server re-reads them on its next tool call."""
+    saved_provider, saved_model = load_selection()
+
+    st.selectbox(
+        "API provider",
+        PROVIDERS,
+        index=PROVIDERS.index(saved_provider) if saved_provider in PROVIDERS else 0,
+        key="model-provider",
+        on_change=save_selection_from_widgets,
+        args=("model-provider", "model-name"),
+    )
+    provider = st.session_state["model-provider"]
+    fallback = saved_model if provider == saved_provider else default_model(provider)
+    options = list(dict.fromkeys([fallback, *available_models(provider)]))
+    st.selectbox(
+        "Model",
+        options,
+        index=options.index(fallback) if fallback in options else 0,
+        accept_new_options=True,
+        key=f"model-name-{provider}",
+        on_change=save_selection_from_widgets,
+        args=("model-provider", "model-name"),
+        help="Model ids are read from the running local server; type a name to use one that is not listed.",
+    )
+
+    st.caption(
+        f"Applies to the MCP server on its next tool call · saved in `{config_path()}`"
+    )
+    st.divider()
+
+
 def render_dashboard() -> None:
+    render_model_settings()
+
     try:
         data = read_dashboard_data()
     except (sqlite3.Error, json.JSONDecodeError) as error:
@@ -189,8 +247,9 @@ def main() -> None:
     )
     st.title("Agent Memory Monitor")
     st.markdown(
-        "Monitor the shared MCP memory store. This dashboard is read-only and "
-        "does not call Gemini or alter stored memories."
+        "Monitor the shared MCP memory store. Stored memories are never modified "
+        "here; the pickers below only choose which provider and model the MCP "
+        "server uses."
     )
     render_monitor()
 

@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from asyncio_noise import quiet_windows_asyncio_resets
 from memory import agent
+from memory.config import load_selection
 
 quiet_windows_asyncio_resets()
 
@@ -21,6 +22,7 @@ MAX_SOURCE_LENGTH = 500
 MAX_QUERY_LENGTH = 200
 MAX_SEARCH_RESULTS = 10
 _memory_agent: agent.MemoryAgent | None = None
+_memory_selection: tuple[str, str] | None = None
 
 mcp = FastMCP(
     "agent-memory",
@@ -37,9 +39,12 @@ mcp = FastMCP(
 
 
 def _get_memory_agent() -> agent.MemoryAgent:
-    global _memory_agent
-    if _memory_agent is None:
-        _memory_agent = agent.MemoryAgent()
+    """Return the agent, rebuilding it when the dashboard changes provider or model."""
+    global _memory_agent, _memory_selection
+    selection = load_selection()
+    if _memory_agent is None or selection != _memory_selection:
+        _memory_agent = agent.MemoryAgent(agent.build_model(*selection))
+        _memory_selection = selection
     return _memory_agent
 
 

@@ -12,6 +12,20 @@ ConsolidateAgent. The MCP tools call those same methods and database helpers:
 - `consolidate_memories`: run the upstream ConsolidateAgent.
 - `search_memories` and `memory_stats`: read the upstream SQLite store.
 
+Each MCP tool drives its matching agent directly — `ingest_memory` →
+IngestAgent, `query_memory` → QueryAgent, `consolidate_memories` →
+ConsolidateAgent — with no orchestrator hop, so a small local model only has to
+make one tool decision. Behaviour you can rely on:
+
+- `ingest_memory` checks the store after the model runs. If the model did not
+  call `store_memory`, the text is saved verbatim without entity/topic
+  extraction and the reply says so, instead of silently storing nothing.
+- `consolidate_memories` answers "Nothing to consolidate" without calling the
+  model when fewer than two unconsolidated memories exist.
+- `memory_stats` is a direct database read and never calls the model.
+- `entities`, `topics`, and `connections` are normalised to lists, so a model
+  that sends one comma-separated string still searches and renders correctly.
+
 
 ## Requirements
 
@@ -126,6 +140,16 @@ Open `http://127.0.0.1:8501`. The dashboard uses the same default database as
 the MCP server. If `MEMORY_DB` is set, set it to the same path in both
 processes. The dashboard can be started before the first memory database is
 created; it will show a waiting message and refresh automatically.
+
+### Switch provider and model from the dashboard
+
+The two dropdowns at the top of the page choose the API provider
+(`lmstudio`, `ollama`, `gemini`) and the model. Model ids are read live from the
+running local server, and you can type a name that is not listed. The choice is
+saved to `memory-config.json` next to [server.py](./server.py) (override the
+location with `MEMORY_CONFIG`), and the MCP server picks it up on its next tool
+call — no restart needed. Precedence is: dashboard selection, then
+`MEMORY_PROVIDER`/`MODEL`, then the built-in defaults.
 
 ## Test
 

@@ -26,6 +26,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from aiohttp import web
 from google.adk.agents import Agent
@@ -34,18 +35,15 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from memory import config
+from memory.records import as_dict_list, as_int_list, as_text_list, parse_json_list, parse_text_list
+
 # ─── Config ────────────────────────────────────────────────────
 
-DEFAULT_MODELS = {
-    "lmstudio": "liquid/lfm2.5-1.2b",
-    "ollama": "qwen2.5:1.6b",
-    "gemini": "gemini-3.1-flash-lite",
-}
-PROVIDER = os.getenv("MEMORY_PROVIDER", "lmstudio").strip().lower()
-MODEL = os.getenv("MODEL", "").strip() or DEFAULT_MODELS.get(PROVIDER, DEFAULT_MODELS["gemini"])
-LMSTUDIO_API_BASE = os.getenv("LMSTUDIO_API_BASE", "http://127.0.0.1:1234/v1").rstrip("/")
+PROVIDER, MODEL = config.env_selection()
+LMSTUDIO_API_BASE = os.getenv("LMSTUDIO_API_BASE", config.LMSTUDIO_API_BASE).rstrip("/")
 LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", "lm-studio")
-OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", config.OLLAMA_API_BASE).rstrip("/")
 DB_PATH = os.getenv("MEMORY_DB", "memory.db")
 
 # Supported file types for multimodal ingestion
@@ -147,7 +145,15 @@ def store_memory(
     cursor = db.execute(
         """INSERT INTO memories (source, raw_text, summary, entities, topics, importance, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (source, raw_text, summary, json.dumps(entities), json.dumps(topics), importance, now),
+        (
+            source,
+            raw_text,
+            summary,
+            json.dumps(as_text_list(entities)),
+            json.dumps(as_text_list(topics)),
+            importance,
+            now,
+        ),
     )
     db.commit()
     mid = cursor.lastrowid
@@ -168,8 +174,8 @@ def read_all_memories() -> dict:
     for r in rows:
         memories.append({
             "id": r["id"], "source": r["source"], "summary": r["summary"],
-            "entities": json.loads(r["entities"]), "topics": json.loads(r["topics"]),
-            "importance": r["importance"], "connections": json.loads(r["connections"]),
+            "entities": parse_text_list(r["entities"]), "topics": parse_text_list(r["topics"]),
+            "importance": r["importance"], "connections": parse_json_list(r["connections"]),
             "created_at": r["created_at"], "consolidated": bool(r["consolidated"]),
         })
     db.close()
@@ -190,7 +196,7 @@ def read_unconsolidated_memories() -> dict:
     for r in rows:
         memories.append({
             "id": r["id"], "summary": r["summary"],
-            "entities": json.loads(r["entities"]), "topics": json.loads(r["topics"]),
+            "entities": parse_text_list(r["entities"]), "topics": parse_text_list(r["topics"]),
             "importance": r["importance"], "created_at": r["created_at"],
         })
     db.close()
@@ -201,7 +207,7 @@ def store_consolidation(
     source_ids: list[int],
     summary: str,
     insight: str,
-    connections: list[dict],
+    connections: list[dict] | str,
 ) -> dict:
     """Store a consolidation result and mark source memories as consolidated.
 
@@ -214,6 +220,8 @@ def store_consolidation(
     Returns:
         dict with confirmation.
     """
+    source_ids = as_int_list(source_ids)
+    connections = as_dict_list(connections)
     db = get_db()
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
@@ -227,11 +235,12 @@ def store_consolidation(
             for mid in [from_id, to_id]:
                 row = db.execute("SELECT connections FROM memories WHERE id = ?", (mid,)).fetchone()
                 if row:
-                    existing = json.loads(row["connections"])
+                    existing = parse_json_list(row["connections"])
                     existing.append({"linked_to": to_id if mid == from_id else from_id, "relationship": rel})
                     db.execute("UPDATE memories SET connections = ? WHERE id = ?", (json.dumps(existing), mid))
-    placeholders = ",".join("?" * len(source_ids))
-    db.execute(f"UPDATE memories SET consolidated = 1 WHERE id IN ({placeholders})", source_ids)
+    if source_ids:
+        placeholders = ",".join("?" * len(source_ids))
+        db.execute(f"UPDATE memories SET consolidated = 1 WHERE id IN ({placeholders})", source_ids)
     db.commit()
     db.close()
     log.info(f"🔄 Consolidated {len(source_ids)} memories. Insight: {insight[:80]}...")
@@ -325,9 +334,16 @@ def clear_all_memories(inbox_path: str | None = None) -> dict:
 # ─── ADK Agents ────────────────────────────────────────────────
 
 
+class MemoryAgents(NamedTuple):
+    ingest: Agent
+    consolidate: Agent
+    query: Agent
+    orchestrator: Agent
+
+
 def build_model(
-    provider: str = PROVIDER,
-    name: str = MODEL,
+    provider: str | None = None,
+    name: str | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
 ) -> str | BaseLlm:
@@ -335,8 +351,14 @@ def build_model(
 
     LM Studio and Ollama are reached through ADK's LiteLlm adapter; LM Studio
     serves an OpenAI-compatible API, Ollama its native chat API. Any other
-    provider name is treated as a Gemini model name.
+    provider name is treated as a Gemini model name. Missing arguments come from
+    the effective selection (dashboard setting, then env vars, then defaults).
     """
+    if provider is None or name is None:
+        selected_provider, selected_name = config.load_selection()
+        provider = provider or selected_provider
+        name = name or selected_name
+
     if provider not in {"lmstudio", "ollama"}:
         return name
 
@@ -354,7 +376,7 @@ def build_model(
     )
 
 
-def build_agents(model: str | BaseLlm | None = None):
+def build_agents(model: str | BaseLlm | None = None) -> MemoryAgents:
     model = build_model() if model is None else model
     ingest_agent = Agent(
         name="ingest_agent",
@@ -429,45 +451,56 @@ def build_agents(model: str | BaseLlm | None = None):
         tools=[get_memory_stats],
     )
 
-    return orchestrator
+    return MemoryAgents(
+        ingest=ingest_agent,
+        consolidate=consolidate_agent,
+        query=query_agent,
+        orchestrator=orchestrator,
+    )
+
+
+def fallback_summary(text: str, maximum: int = 200) -> str:
+    collapsed = " ".join(text.split())
+    return collapsed[:maximum] + ("..." if len(collapsed) > maximum else "")
 
 
 # ─── Agent Runner ──────────────────────────────────────────────
 
 
 class MemoryAgent:
-    def __init__(self):
-        self.agent = build_agents()
+    def __init__(self, model: str | BaseLlm | None = None) -> None:
+        self.model = build_model() if model is None else model
+        self.agents = build_agents(self.model)
         self.session_service = InMemorySessionService()
-        self.runner = Runner(
-            agent=self.agent,
-            app_name="memory_layer",
+        self._runners = {
+            "ingest": self._make_runner("ingest", self.agents.ingest),
+            "consolidate": self._make_runner("consolidate", self.agents.consolidate),
+            "query": self._make_runner("query", self.agents.query),
+        }
+
+    def _make_runner(self, name: str, agent: Agent) -> Runner:
+        return Runner(
+            agent=agent,
+            app_name=f"memory_{name}",
             session_service=self.session_service,
         )
 
-    async def run(self, message: str) -> str:
-        session = await self.session_service.create_session(
-            app_name="memory_layer", user_id="agent",
-        )
-        content = types.Content(role="user", parts=[types.Part.from_text(text=message)])
-        return await self._execute(session, content)
+    async def _run(self, name: str, message: str) -> str:
+        return await self._run_parts(name, [types.Part.from_text(text=message)])
 
-    async def run_multimodal(self, text: str, file_bytes: bytes, mime_type: str) -> str:
-        """Send a multimodal message with both text and a media file."""
+    async def _run_parts(self, name: str, parts: list[types.Part]) -> str:
+        """Run one specialist agent directly; no orchestrator routing involved."""
+        runner = self._runners[name]
         session = await self.session_service.create_session(
-            app_name="memory_layer", user_id="agent",
+            app_name=f"memory_{name}", user_id="agent",
         )
-        parts = [
-            types.Part.from_text(text=text),
-            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-        ]
         content = types.Content(role="user", parts=parts)
-        return await self._execute(session, content)
+        return await self._execute(runner, session, content)
 
-    async def _execute(self, session, content: types.Content) -> str:
+    async def _execute(self, runner: Runner, session, content: types.Content) -> str:
         """Run the agent with the given content and return the text response."""
         response = ""
-        async for event in self.runner.run_async(
+        async for event in runner.run_async(
             user_id="agent", session_id=session.id, new_message=content,
         ):
             if event.content and event.content.parts:
@@ -477,8 +510,28 @@ class MemoryAgent:
         return response
 
     async def ingest(self, text: str, source: str = "") -> str:
+        before = get_memory_stats()["total_memories"]
         msg = f"Remember this information (source: {source}):\n\n{text}" if source else f"Remember this information:\n\n{text}"
-        return await self.run(msg)
+        reply = await self._run("ingest", msg)
+        if get_memory_stats()["total_memories"] > before:
+            return reply.strip() or "Memory stored."
+
+        stored = store_memory(
+            raw_text=text,
+            summary=fallback_summary(text),
+            entities=[],
+            topics=[],
+            importance=0.5,
+            source=source,
+        )
+        log.warning(
+            f"⚠️  Model returned no store_memory call; saved memory #{stored['memory_id']} verbatim"
+        )
+        reason = (
+            f"Memory #{stored['memory_id']} saved verbatim without entity/topic extraction: "
+            f"the model returned no store_memory call. Use a stronger model for extraction."
+        )
+        return f"{reply.strip()}\n\n{reason}" if reply.strip() else reason
 
     async def ingest_file(self, file_path: Path) -> str:
         """Ingest a media file (image, audio, video, PDF) via multimodal."""
@@ -510,16 +563,34 @@ class MemoryAgent:
             f"extract all meaningful information for memory storage."
         )
         log.info(f"🔮 Ingesting {mime_type.split('/')[0]}: {file_path.name} ({size_mb:.1f}MB)")
-        return await self.run_multimodal(prompt, file_bytes, mime_type)
+        parts = [
+            types.Part.from_text(text=prompt),
+            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+        ]
+        return await self._run_parts("ingest", parts)
 
     async def consolidate(self) -> str:
-        return await self.run("Consolidate unconsolidated memories. Find connections and patterns.")
+        pending = get_memory_stats()["unconsolidated"]
+        if pending < 2:
+            return (
+                f"Nothing to consolidate: {pending} unconsolidated "
+                f"memor{'y' if pending == 1 else 'ies'} (at least 2 are needed). "
+                f"Ingest more memories first."
+            )
+        return await self._run(
+            "consolidate", "Consolidate unconsolidated memories. Find connections and patterns."
+        )
 
     async def query(self, question: str) -> str:
-        return await self.run(f"Based on my memories, answer: {question}")
+        return await self._run("query", f"Based on my memories, answer: {question}")
 
     async def status(self) -> str:
-        return await self.run("Give me a status report on my memory system.")
+        stats = get_memory_stats()
+        return (
+            f"Memories: {stats['total_memories']}, "
+            f"unconsolidated: {stats['unconsolidated']}, "
+            f"consolidations: {stats['consolidations']}"
+        )
 
 
 # ─── File Watcher ──────────────────────────────────────────────
@@ -660,8 +731,9 @@ async def main_async(args):
     agent = MemoryAgent()
 
     log.info("🧠 Agent Memory Layer starting")
-    endpoint = {"lmstudio": LMSTUDIO_API_BASE, "ollama": OLLAMA_API_BASE}.get(PROVIDER, "google")
-    log.info(f"   Model: {MODEL} (provider: {PROVIDER}, endpoint: {endpoint})")
+    provider, model = config.load_selection()
+    endpoint = {"lmstudio": LMSTUDIO_API_BASE, "ollama": OLLAMA_API_BASE}.get(provider, "google")
+    log.info(f"   Model: {model} (provider: {provider}, endpoint: {endpoint})")
     log.info(f"   Database: {DB_PATH}")
     log.info(f"   Watch: {args.watch}")
     log.info(f"   Consolidate: every {args.consolidate_every}m")

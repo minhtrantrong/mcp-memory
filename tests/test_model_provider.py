@@ -38,12 +38,12 @@ class ModelProviderTests(unittest.TestCase):
     def test_build_agents_share_the_configured_model(self) -> None:
         model = agent.build_model("lmstudio", "liquid/lfm2.5-1.2b")
 
-        orchestrator = agent.build_agents(model)
+        agents = agent.build_agents(model)
 
-        self.assertEqual(orchestrator.model.model, "openai/liquid/lfm2.5-1.2b")
-        self.assertEqual(orchestrator.model._additional_args["api_base"], agent.LMSTUDIO_API_BASE)
-        for sub_agent in orchestrator.sub_agents:
-            self.assertIs(sub_agent.model, model)
+        self.assertEqual(agents.orchestrator.model.model, "openai/liquid/lfm2.5-1.2b")
+        self.assertEqual(agents.orchestrator.model._additional_args["api_base"], agent.LMSTUDIO_API_BASE)
+        for specialist in (agents.ingest, agents.consolidate, agents.query):
+            self.assertIs(specialist.model, model)
 
     def test_media_ingestion_is_skipped_without_a_gemini_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
