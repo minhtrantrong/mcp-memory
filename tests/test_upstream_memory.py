@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from upstream import agent
+from memory import agent
 
 
 class UpstreamMemoryTests(unittest.TestCase):

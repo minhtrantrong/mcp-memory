@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from dashboard import read_dashboard_data
-from upstream import agent
+from memory import agent
 
 
 class DashboardTests(unittest.TestCase):

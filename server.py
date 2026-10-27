@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from upstream import agent as upstream_agent
+from memory import agent
 
 DB_PATH = Path(os.getenv("MEMORY_DB", Path(__file__).with_name("memory.db")))
-upstream_agent.DB_PATH = str(DB_PATH)
+agent.DB_PATH = str(DB_PATH)
 
 HOST = "127.0.0.1"
 PORT = int(os.getenv("MEMORY_MCP_PORT", "8765"))
@@ -17,7 +17,7 @@ MAX_TEXT_LENGTH = 10_000
 MAX_SOURCE_LENGTH = 500
 MAX_QUERY_LENGTH = 200
 MAX_SEARCH_RESULTS = 10
-_memory_agent: upstream_agent.MemoryAgent | None = None
+_memory_agent: agent.MemoryAgent | None = None
 
 mcp = FastMCP(
     "agent-memory",
@@ -33,10 +33,10 @@ mcp = FastMCP(
 )
 
 
-def _get_memory_agent() -> upstream_agent.MemoryAgent:
+def _get_memory_agent() -> agent.MemoryAgent:
     global _memory_agent
     if _memory_agent is None:
-        _memory_agent = upstream_agent.MemoryAgent()
+        _memory_agent = agent.MemoryAgent()
     return _memory_agent
 
 
@@ -76,7 +76,7 @@ def search_memories(query: str, limit: int = 5) -> list[dict[str, Any]]:
     if not 1 <= limit <= MAX_SEARCH_RESULTS:
         raise ValueError(f"limit must be between 1 and {MAX_SEARCH_RESULTS}")
 
-    memories: Iterable[dict[str, Any]] = upstream_agent.read_all_memories()["memories"]
+    memories: Iterable[dict[str, Any]] = agent.read_all_memories()["memories"]
     matches = []
     for memory in memories:
         searchable = [
@@ -95,11 +95,11 @@ def search_memories(query: str, limit: int = 5) -> list[dict[str, Any]]:
 @mcp.tool()
 def memory_stats() -> dict[str, int]:
     """Return counts from the upstream SQLite memory store."""
-    return upstream_agent.get_memory_stats()
+    return agent.get_memory_stats()
 
 
 if __name__ == "__main__":
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = upstream_agent.get_db()
+    db = agent.get_db()
     db.close()
     mcp.run(transport="streamable-http")
