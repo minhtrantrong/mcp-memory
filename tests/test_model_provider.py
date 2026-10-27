@@ -12,7 +12,7 @@ from memory import agent
 class ModelProviderTests(unittest.TestCase):
     def test_lm_studio_is_the_default_provider(self) -> None:
         self.assertEqual(agent.PROVIDER, "lmstudio")
-        self.assertEqual(agent.MODEL, "qwen3-0.6b")
+        self.assertEqual(agent.MODEL, "liquid/lfm2.5-1.2b")
 
     def test_lm_studio_models_use_the_openai_compatible_api(self) -> None:
         model = agent.build_model("lmstudio", "qwen3-0.6b", "http://127.0.0.1:1234/v1")

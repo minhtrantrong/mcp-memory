@@ -37,7 +37,7 @@ from google.genai import types
 # ─── Config ────────────────────────────────────────────────────
 
 DEFAULT_MODELS = {
-    "lmstudio": "qwen3-0.6b",
+    "lmstudio": "liquid/lfm2.5-1.2b",
     "ollama": "qwen2.5:1.6b",
     "gemini": "gemini-3.1-flash-lite",
 }

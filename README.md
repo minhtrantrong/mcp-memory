@@ -31,7 +31,7 @@ The agents run on Google ADK and use a local LM Studio model by default:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MEMORY_PROVIDER` | `lmstudio` | Model backend (`lmstudio`, `ollama`, or `gemini`) |
-| `MODEL` | `qwen3-0.6b` | Model key or name |
+| `MODEL` | `liquid/lfm2.5-1.2b` | Model key or name |
 | `LMSTUDIO_API_BASE` | `http://127.0.0.1:1234/v1` | LM Studio server endpoint |
 | `LMSTUDIO_API_KEY` | `lm-studio` | Placeholder key; LM Studio ignores the value |
 | `OLLAMA_API_BASE` | `http://127.0.0.1:11434` | Ollama endpoint, used only when `MEMORY_PROVIDER=ollama` |
