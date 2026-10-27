@@ -9,6 +9,7 @@ dependencies = [
     "google-adk>=1.0.0",
     "google-genai>=1.0.0",
     "streamlit>=1.37.0",
+    "litellm>=1.84,<1.106",
 ]
 
 [tool.pytest.ini_options]

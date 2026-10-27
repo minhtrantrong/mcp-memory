@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from asyncio_noise import quiet_windows_asyncio_resets
 from memory import agent
 
-DB_PATH = Path(os.getenv("MEMORY_DB", Path(__file__).with_name("memory.db")))
+quiet_windows_asyncio_resets()
+
+DB_PATH = Path(os.getenv("MEMORY_DB", Path(__file__).resolve().with_name("memory.db")))
 agent.DB_PATH = str(DB_PATH)
 
 HOST = "127.0.0.1"

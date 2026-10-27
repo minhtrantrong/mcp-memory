@@ -15,7 +15,11 @@ from typing import Any
 
 import streamlit as st
 
-DB_PATH = Path(os.getenv("MEMORY_DB", Path(__file__).with_name("memory.db")))
+from asyncio_noise import quiet_windows_asyncio_resets
+
+quiet_windows_asyncio_resets()
+
+DB_PATH = Path(os.getenv("MEMORY_DB", Path(__file__).resolve().with_name("memory.db")))
 MAX_RECENT_MEMORIES = 50
 MAX_RECENT_CONSOLIDATIONS = 20
 
@@ -108,7 +112,12 @@ def render_dashboard() -> None:
 
     st.caption(f"Read-only database monitor · `{DB_PATH}` · refreshes every 15 seconds")
     if data is None:
-        st.info("Waiting for the MCP server to create the memory database.")
+        st.info(f"Waiting for the MCP server to create the memory database at `{DB_PATH}`.")
+        st.code("uv run python server.py", language="powershell")
+        st.caption(
+            "The dashboard only reads the database; the server creates it on startup "
+            "and appends memories as tools are called."
+        )
         return
 
     stats = data["stats"]
@@ -118,7 +127,7 @@ def render_dashboard() -> None:
     consolidated.metric("Consolidations", stats["consolidations"])
 
     query = st.text_input("Filter recent memories", placeholder="Search summary, source, topic, or entity")
-    status_filter = st.selectbox(
+    status_filter = st.radio(
         "Consolidation status",
         ("All", "Pending", "Consolidated"),
         horizontal=True,

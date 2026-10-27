@@ -1,7 +1,7 @@
 """
 Agent Memory Layer — Always-On ADK Agent
 
-A lightweight, cost-effective background agent that continuously processes, consolidates, and serves memory. Runs 24/7 on Gemini 3.1 Flash-Lite.
+A lightweight, cost-effective background agent that continuously processes, consolidates, and serves memory. Runs by default on a local LM Studio model, or on Ollama or Gemini 3.1 Flash-Lite when `MEMORY_PROVIDER` is set.
 
 Usage:
     python agent.py                          # watch ./inbox, serve on :8888
@@ -29,13 +29,23 @@ from pathlib import Path
 
 from aiohttp import web
 from google.adk.agents import Agent
+from google.adk.models.base_llm import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 # ─── Config ────────────────────────────────────────────────────
 
-MODEL = os.getenv("MODEL", "gemini-3.1-flash-lite")
+DEFAULT_MODELS = {
+    "lmstudio": "qwen3-0.6b",
+    "ollama": "qwen2.5:1.6b",
+    "gemini": "gemini-3.1-flash-lite",
+}
+PROVIDER = os.getenv("MEMORY_PROVIDER", "lmstudio").strip().lower()
+MODEL = os.getenv("MODEL", "").strip() or DEFAULT_MODELS.get(PROVIDER, DEFAULT_MODELS["gemini"])
+LMSTUDIO_API_BASE = os.getenv("LMSTUDIO_API_BASE", "http://127.0.0.1:1234/v1").rstrip("/")
+LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", "lm-studio")
+OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434").rstrip("/")
 DB_PATH = os.getenv("MEMORY_DB", "memory.db")
 
 # Supported file types for multimodal ingestion
@@ -315,10 +325,40 @@ def clear_all_memories(inbox_path: str | None = None) -> dict:
 # ─── ADK Agents ────────────────────────────────────────────────
 
 
-def build_agents():
+def build_model(
+    provider: str = PROVIDER,
+    name: str = MODEL,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> str | BaseLlm:
+    """Return the ADK model binding for a provider.
+
+    LM Studio and Ollama are reached through ADK's LiteLlm adapter; LM Studio
+    serves an OpenAI-compatible API, Ollama its native chat API. Any other
+    provider name is treated as a Gemini model name.
+    """
+    if provider not in {"lmstudio", "ollama"}:
+        return name
+
+    from google.adk.models.lite_llm import LiteLlm
+
+    if provider == "ollama":
+        return LiteLlm(
+            model=f"ollama_chat/{name}",
+            api_base=api_base or OLLAMA_API_BASE,
+        )
+    return LiteLlm(
+        model=f"openai/{name}",
+        api_base=api_base or LMSTUDIO_API_BASE,
+        api_key=api_key or LMSTUDIO_API_KEY,
+    )
+
+
+def build_agents(model: str | BaseLlm | None = None):
+    model = build_model() if model is None else model
     ingest_agent = Agent(
         name="ingest_agent",
-        model=MODEL,
+        model=model,
         description="Processes raw text or media into structured memory. Call this when new information arrives.",
         instruction=(
             "You are a Memory Ingest Agent. You handle ALL types of input — text, images,\n"
@@ -341,7 +381,7 @@ def build_agents():
 
     consolidate_agent = Agent(
         name="consolidate_agent",
-        model=MODEL,
+        model=model,
         description="Merges related memories and finds patterns. Call this periodically.",
         instruction=(
             "You are a Memory Consolidation Agent. You:\n"
@@ -358,7 +398,7 @@ def build_agents():
 
     query_agent = Agent(
         name="query_agent",
-        model=MODEL,
+        model=model,
         description="Answers questions using stored memories.",
         instruction=(
             "You are a Memory Query Agent. When asked a question:\n"
@@ -374,7 +414,7 @@ def build_agents():
 
     orchestrator = Agent(
         name="memory_orchestrator",
-        model=MODEL,
+        model=model,
         description="Routes memory operations to specialist agents.",
         instruction=(
             "You are the Memory Orchestrator for an always-on memory system.\n"
@@ -442,6 +482,13 @@ class MemoryAgent:
 
     async def ingest_file(self, file_path: Path) -> str:
         """Ingest a media file (image, audio, video, PDF) via multimodal."""
+        if PROVIDER != "gemini":
+            log.warning(
+                f"⚠️  Skipping {file_path.name} — media ingestion requires a Gemini model "
+                f"(MEMORY_PROVIDER is '{PROVIDER}')"
+            )
+            return f"Skipped: media ingestion requires a Gemini model (provider: {PROVIDER})"
+
         suffix = file_path.suffix.lower()
         mime_type = MEDIA_EXTENSIONS.get(suffix)
         if not mime_type:
@@ -613,7 +660,8 @@ async def main_async(args):
     agent = MemoryAgent()
 
     log.info("🧠 Agent Memory Layer starting")
-    log.info(f"   Model: {MODEL}")
+    endpoint = {"lmstudio": LMSTUDIO_API_BASE, "ollama": OLLAMA_API_BASE}.get(PROVIDER, "google")
+    log.info(f"   Model: {MODEL} (provider: {PROVIDER}, endpoint: {endpoint})")
     log.info(f"   Database: {DB_PATH}")
     log.info(f"   Watch: {args.watch}")
     log.info(f"   Consolidate: every {args.consolidate_every}m")
